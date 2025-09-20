@@ -126,8 +126,11 @@ class VideoGenerator {
 
     getDetailedMessage(status) {
         const messages = {
+            'initializing': 'Preparing the video generation system...',
             'generating_script': 'AI is analyzing your request and creating the Manim script...',
+            'fixing_errors': 'AI is analyzing compilation errors and generating a fixed script...',
             'compiling': 'Compiling the animation and rendering the video...',
+            'compilation_failed': 'Compilation failed, preparing to retry with AI assistance...',
             'completed': 'Your video has been generated successfully!',
             'error': 'An error occurred during generation.',
             'not_found': 'Job not found in the system.'
