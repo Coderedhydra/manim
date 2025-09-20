@@ -128,7 +128,7 @@ def test_gemini_api():
             return False
         
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Simple test
         response = model.generate_content("Say 'API test successful'")

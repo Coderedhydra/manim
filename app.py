@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Configure Gemini AI
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-model = genai.GenerativeModel('gemini-pro')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # Directories
 SCRIPTS_DIR = os.path.join(app.root_path, 'scripts')
@@ -38,33 +38,52 @@ class VideoGenerator:
     def __init__(self):
         self.generation_status = {}
     
-    def generate_manim_script(self, user_prompt):
+    def generate_manim_script(self, user_prompt, fix_errors=None):
         """Generate Manim script using Gemini AI with optimized prompts"""
         
-        system_prompt = """You are an expert Manim (Mathematical Animation Engine) developer. 
-        Generate clean, working Python code using Manim that creates educational animations.
-        
-        IMPORTANT GUIDELINES:
-        1. Always import: from manim import *
-        2. Create a class that inherits from Scene
-        3. Implement the construct method
-        4. Use proper Manim syntax and objects (Text, MathTex, Circle, Square, etc.)
-        5. Add appropriate animations (Create, Transform, Write, FadeIn, FadeOut, etc.)
-        6. Keep animations simple but engaging
-        7. Use self.play() for animations and self.wait() for pauses
-        8. Ensure the code is syntactically correct
-        9. Use appropriate colors and positioning
-        10. Make sure all imports and class definitions are complete
-        
-        AVOID:
-        - Complex mathematical formulas unless specifically requested
-        - External file dependencies
-        - User input during animation
-        - Overly complex animations that might fail
-        - Using deprecated Manim syntax
-        
-        Generate ONLY the Python code, no explanations or markdown formatting.
-        """
+        if fix_errors:
+            system_prompt = f"""You are an expert Manim developer. The previous script had compilation errors.
+            Please fix the following errors and generate a corrected Manim script:
+            
+            ERRORS TO FIX:
+            {fix_errors}
+            
+            REQUIREMENTS:
+            1. Always import: from manim import *
+            2. Create a class that inherits from Scene
+            3. Implement the construct method
+            4. Fix all syntax and runtime errors
+            5. Use proper Manim syntax and objects
+            6. Ensure the code compiles and runs successfully
+            7. Keep animations simple but functional
+            
+            Generate ONLY the corrected Python code, no explanations."""
+        else:
+            system_prompt = """You are an expert Manim (Mathematical Animation Engine) developer. 
+            Generate clean, working Python code using Manim that creates educational animations.
+            
+            CRITICAL REQUIREMENTS:
+            1. Always import: from manim import *
+            2. Create a class that inherits from Scene
+            3. Implement the construct method
+            4. Use proper Manim syntax and objects (Text, MathTex, Circle, Square, etc.)
+            5. Add appropriate animations (Create, Transform, Write, FadeIn, FadeOut, etc.)
+            6. Keep animations simple but engaging
+            7. Use self.play() for animations and self.wait() for pauses
+            8. Ensure the code is syntactically correct
+            9. Use appropriate colors and positioning
+            10. Make sure all imports and class definitions are complete
+            
+            AVOID:
+            - Complex mathematical formulas unless specifically requested
+            - External file dependencies
+            - User input during animation
+            - Overly complex animations that might fail
+            - Using deprecated Manim syntax
+            - Undefined variables or functions
+            
+            Generate ONLY the Python code, no explanations or markdown formatting.
+            """
         
         full_prompt = f"{system_prompt}\n\nUser Request: {user_prompt}\n\nGenerate a complete Manim script:"
         
@@ -86,11 +105,13 @@ class VideoGenerator:
             logger.error(f"Error generating script: {str(e)}")
             raise Exception(f"Failed to generate script: {str(e)}")
     
-    def compile_manim_script(self, script_content, job_id):
-        """Compile Manim script and generate video"""
+    def compile_manim_script(self, script_content, job_id, user_prompt, retry_count=0):
+        """Compile Manim script and generate video with error fixing"""
+        max_retries = 2
+        
         try:
             # Create unique filename
-            script_filename = f"scene_{job_id}.py"
+            script_filename = f"scene_{job_id}_{retry_count}.py"
             script_path = os.path.join(SCRIPTS_DIR, script_filename)
             
             # Write script to file
@@ -126,9 +147,25 @@ class VideoGenerator:
             )
             
             if result.returncode != 0:
-                error_msg = f"Manim compilation failed:\nStdout: {result.stdout}\nStderr: {result.stderr}"
-                logger.error(error_msg)
-                raise Exception(error_msg)
+                error_details = f"Stdout: {result.stdout}\nStderr: {result.stderr}"
+                logger.error(f"Manim compilation failed: {error_details}")
+                
+                # Try to fix the errors with AI if we haven't exceeded retry limit
+                if retry_count < max_retries:
+                    logger.info(f"Attempting to fix errors (retry {retry_count + 1}/{max_retries})")
+                    
+                    # Update status
+                    if job_id in self.generation_status:
+                        self.generation_status[job_id]['message'] = f'Fixing compilation errors (attempt {retry_count + 1})'
+                        self.generation_status[job_id]['progress'] = 40 + (retry_count * 10)
+                    
+                    # Generate fixed script
+                    fixed_script = self.generate_manim_script(user_prompt, fix_errors=error_details)
+                    
+                    # Retry compilation with fixed script
+                    return self.compile_manim_script(fixed_script, job_id, user_prompt, retry_count + 1)
+                else:
+                    raise Exception(f"Manim compilation failed after {max_retries} attempts:\n{error_details}")
             
             # Find generated video file
             video_files = []
@@ -153,6 +190,20 @@ class VideoGenerator:
         except subprocess.TimeoutExpired:
             raise Exception("Video generation timed out. Please try with a simpler animation.")
         except Exception as e:
+            if "No valid Scene class found" in str(e) and retry_count < max_retries:
+                logger.info(f"Attempting to fix scene class issue (retry {retry_count + 1}/{max_retries})")
+                
+                # Update status
+                if job_id in self.generation_status:
+                    self.generation_status[job_id]['message'] = f'Fixing script structure (attempt {retry_count + 1})'
+                    self.generation_status[job_id]['progress'] = 40 + (retry_count * 10)
+                
+                # Generate fixed script
+                fixed_script = self.generate_manim_script(user_prompt, fix_errors=str(e))
+                
+                # Retry compilation with fixed script
+                return self.compile_manim_script(fixed_script, job_id, user_prompt, retry_count + 1)
+            
             logger.error(f"Error compiling script: {str(e)}")
             raise Exception(f"Failed to compile video: {str(e)}")
     
@@ -171,6 +222,7 @@ class VideoGenerator:
     def generate_video_async(self, user_prompt, job_id):
         """Generate video asynchronously"""
         try:
+            # Initialize status
             self.generation_status[job_id] = {
                 'status': 'generating_script',
                 'message': 'Generating Manim script...',
@@ -180,6 +232,7 @@ class VideoGenerator:
             # Generate script
             script_content = self.generate_manim_script(user_prompt)
             
+            # Update status
             self.generation_status[job_id] = {
                 'status': 'compiling',
                 'message': 'Compiling video...',
@@ -187,9 +240,10 @@ class VideoGenerator:
                 'script': script_content
             }
             
-            # Compile video
-            video_filename = self.compile_manim_script(script_content, job_id)
+            # Compile video with retry capability
+            video_filename = self.compile_manim_script(script_content, job_id, user_prompt)
             
+            # Final success status
             self.generation_status[job_id] = {
                 'status': 'completed',
                 'message': 'Video generated successfully!',
@@ -199,10 +253,12 @@ class VideoGenerator:
             }
             
         except Exception as e:
+            logger.error(f"Video generation failed for job {job_id}: {str(e)}")
             self.generation_status[job_id] = {
                 'status': 'error',
                 'message': str(e),
-                'progress': 0
+                'progress': 0,
+                'error_details': str(e)
             }
 
 # Initialize video generator
@@ -247,12 +303,19 @@ def generate_video():
 @app.route('/status/<job_id>')
 def get_status(job_id):
     """Get generation status"""
-    status = video_generator.generation_status.get(job_id, {
-        'status': 'not_found',
-        'message': 'Job not found',
-        'progress': 0
-    })
-    return jsonify(status)
+    if job_id in video_generator.generation_status:
+        status = video_generator.generation_status[job_id]
+        logger.info(f"Status for job {job_id}: {status}")
+        return jsonify(status)
+    else:
+        logger.warning(f"Job {job_id} not found in generation_status")
+        # Return a more informative response
+        return jsonify({
+            'status': 'not_found',
+            'message': 'Job not found. The job may have expired or never existed.',
+            'progress': 0,
+            'error_details': f'Job ID {job_id} was not found in the system. Please try generating a new video.'
+        }), 404
 
 @app.route('/examples')
 def get_examples():

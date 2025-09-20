@@ -91,6 +91,16 @@ class VideoGenerator {
 
         try {
             const response = await fetch(`/status/${this.currentJobId}`);
+            
+            if (!response.ok) {
+                if (response.status === 404) {
+                    const errorData = await response.json();
+                    this.handleError(errorData.message || 'Job not found');
+                    return;
+                }
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
             const status = await response.json();
 
             this.updateProgress(
@@ -102,12 +112,15 @@ class VideoGenerator {
             if (status.status === 'completed') {
                 this.handleSuccess(status);
             } else if (status.status === 'error') {
-                this.handleError(status.message);
+                const errorMsg = status.error_details || status.message || 'Unknown error occurred';
+                this.handleError(errorMsg);
+            } else if (status.status === 'not_found') {
+                this.handleError(status.message || 'Job not found');
             }
 
         } catch (error) {
             console.error('Error checking status:', error);
-            this.handleError('Failed to check generation status');
+            this.handleError(`Failed to check generation status: ${error.message}`);
         }
     }
 
@@ -116,7 +129,8 @@ class VideoGenerator {
             'generating_script': 'AI is analyzing your request and creating the Manim script...',
             'compiling': 'Compiling the animation and rendering the video...',
             'completed': 'Your video has been generated successfully!',
-            'error': 'An error occurred during generation.'
+            'error': 'An error occurred during generation.',
+            'not_found': 'Job not found in the system.'
         };
         return messages[status] || 'Processing your request...';
     }
